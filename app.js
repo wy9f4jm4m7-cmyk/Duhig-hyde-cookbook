@@ -49,7 +49,7 @@ async function uploadRecipesToCloud(){
     .from('recipes')
     .upsert(cloudRecipes);
 
-  if(error) console.error('Cloud sync error:',error);
+  if(error) alert('Cloud upload failed: ' + error.message);
 }
 
 async function startCloudSync(){
