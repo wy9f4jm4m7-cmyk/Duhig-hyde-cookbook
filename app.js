@@ -1,3 +1,7 @@
+const SUPABASE_URL='https://wjpvhabylmfoyiamxfmz.supabase.co';
+const SUPABASE_KEY='sb_publishable_9uE37OzD7zwp-nu6JEFBDA_SDe5AMbs';
+const db=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let cloudUser=null;
 const KEY='dh-recipes-v1', SHOP='dh-shop-v1';
 const seed=[
 {id:crypto.randomUUID(),name:'Garlic Sourdough',category:'Sides',serves:4,fav:true,ingredients:['4 thick slices sourdough','3 tbsp olive oil','2 tsp chopped garlic','Pinch of salt','Black pepper'],method:['Heat the oven to 200°C.','Mix the olive oil, garlic, salt and pepper.','Brush generously over the sourdough.','Bake for 8–10 minutes until crisp at the edges.']},
@@ -21,7 +25,68 @@ if(!localStorage.getItem(MIGRATION_KEY)){
 }
 
 const $=s=>document.querySelector(s), recipesEl=$('#recipes'), shopping=$('#shopping');
-function save(){localStorage.setItem(KEY,JSON.stringify(recipes))} save();
+function save(){
+  localStorage.setItem(KEY,JSON.stringify(recipes));
+  if(cloudUser) uploadRecipesToCloud();
+}
+save();
+async function uploadRecipesToCloud(){
+  if(!cloudUser) return;
+
+  const cloudRecipes=recipes.map(r=>({
+    id:r.id,
+    user_id:cloudUser.id,
+    name:r.name,
+    category:r.category||'Other',
+    serves:r.serves||4,
+    fav:!!r.fav,
+    ingredients:r.ingredients,
+    method:r.method,
+    updated_at:new Date().toISOString()
+  }));
+
+  const {error}=await db
+    .from('recipes')
+    .upsert(cloudRecipes);
+
+  if(error) console.error('Cloud sync error:',error);
+}
+
+async function startCloudSync(){
+  const {data:{session}}=await db.auth.getSession();
+  if(!session) return;
+
+  cloudUser=session.user;
+
+  const {data:cloudRecipes,error}=await db
+    .from('recipes')
+    .select('*')
+    .order('updated_at',{ascending:false});
+
+  if(error){
+    console.error('Cloud load error:',error);
+    return;
+  }
+
+  if(cloudRecipes.length===0){
+    await uploadRecipesToCloud();
+    console.log('Local cookbook uploaded to cloud.');
+    return;
+  }
+
+  recipes=cloudRecipes.map(r=>({
+    id:r.id,
+    name:r.name,
+    category:r.category,
+    serves:r.serves,
+    fav:r.fav,
+    ingredients:r.ingredients,
+    method:r.method
+  }));
+
+  localStorage.setItem(KEY,JSON.stringify(recipes));
+  render();
+}
 function categories(){return ['All',...new Set(recipes.map(r=>r.category).filter(Boolean))]}
 function render(){ const q=$('#search').value.toLowerCase(); $('#cats').innerHTML=categories().map(c=>`<button class="${c===cat?'active':''}" data-cat="${c}">${c}</button>`).join('');
 let list=recipes.filter(r=>(view!=='favs'||r.fav)&&(cat==='All'||r.category===cat)&&(`${r.name} ${r.ingredients.join(' ')}`.toLowerCase().includes(q))); recipesEl.innerHTML=list.map(r=>`<div class="card" data-id="${r.id}"><button class="heart" data-heart="${r.id}">${r.fav?'♥':'♡'}</button><div><small>${esc(r.category||'Recipe')}</small><h3>${esc(r.name)}</h3></div><div class="meta">Serves ${r.serves||'—'} · ${r.ingredients.length} ingredients</div></div>`).join('')||'<p>No recipes found.</p>'; recipesEl.classList.toggle('hidden',view==='shopping'); shopping.classList.toggle('hidden',view!=='shopping'); if(view==='shopping') renderShop();}
@@ -58,3 +123,32 @@ $('#importBtn').onclick=()=>{try{const r=parseRecipeBlock($('#importText').value
 $('#exportBtn').onclick=()=>{const payload={app:'The Duhig-Hyde Cook Book',version:1,exported:new Date().toISOString(),recipes};const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`duhig-hyde-cookbook-backup-${new Date().toISOString().slice(0,10)}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
 $('#backupImportBtn').onclick=()=>$('#backupFile').click();
 $('#backupFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const data=JSON.parse(await f.text());const incoming=Array.isArray(data)?data:data.recipes;if(!Array.isArray(incoming))throw new Error();if(!confirm(`Restore ${incoming.length} recipes from this backup? This will replace the recipes currently on this device.`))return;recipes=incoming;save();render();tools.close();alert('Cookbook restored.')}catch{alert('That does not look like a valid Duhig-Hyde Cook Book backup.')}finally{e.target.value=''}};
+async function cookbookLogin(){
+  const {data:{session}}=await db.auth.getSession();
+
+  if(session){
+    await startCloudSync();
+    return;
+  }
+
+  const email=prompt('Cookbook email address:');
+  if(!email) return;
+
+  const password=prompt('Cookbook password:');
+  if(!password) return;
+
+  const {error}=await db.auth.signInWithPassword({
+    email:email.trim(),
+    password
+  });
+
+  if(error){
+    alert('Could not sign in to the cookbook. Please check the email and password.');
+    console.error(error);
+    return;
+  }
+
+  await startCloudSync();
+}
+
+cookbookLogin();
